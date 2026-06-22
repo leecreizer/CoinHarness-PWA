@@ -1,0 +1,166 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>CoinHarness Mobile</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CoinHarness">
+<meta name="theme-color" content="#0b0e14">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon.png">
+<style>
+:root{--bg:#0b0e14;--card:#141925;--card2:#1b2230;--line:#222a3a;--txt:#e6edf3;--mut:#8b97a8;--dim:#5c6675;--up:#26c281;--down:#ef5350;--warn:#f5b14c;--accent:#4c8dff;}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,sans-serif;padding:14px;padding-top:env(safe-area-inset-top,14px);font-size:15px}
+h1{font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--up);display:inline-block}
+.row{display:flex;gap:8px}
+input{flex:1;background:var(--card2);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:12px 14px;font-size:16px;outline:none}
+button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:12px 18px;font-weight:700;font-size:15px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-top:12px}
+.badge{padding:4px 13px;border-radius:999px;font-size:13px;font-weight:700}
+.b-buy{background:rgba(38,194,129,.16);color:var(--up)} .b-hold{background:rgba(245,177,76,.16);color:var(--warn)}
+.mut{color:var(--mut);font-size:13px} .dim{color:var(--dim)} .pos{color:var(--up)} .neg{color:var(--down)}
+.num{font-variant-numeric:tabular-nums}
+.line{padding:4px 0;font-size:14px}
+.plan{background:var(--card2);border-radius:10px;padding:6px 11px;margin:5px 0;font-size:14px}
+.wl{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line)}
+.wl:last-child{border:0} .wl b{flex:0 0 88px} .x{margin-left:auto;color:var(--dim);padding:4px 8px}
+h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+</style></head><body>
+<h1><span class="dot"></span>CoinHarness <span class="mut" style="font-weight:400">Mobile · 폰 자체구동</span></h1>
+<div class="row">
+  <input id="q" placeholder="코인 입력 (예: BTC, SOL, WLD)" autocapitalize="characters" autocomplete="off">
+  <button id="go">분석</button>
+</div>
+<button id="reco" style="width:100%;margin-top:8px;background:var(--card2);color:var(--accent);border:1px solid var(--accent)">🔍 지금 매수후보 추천 (상위 코인 자동 스캔)</button>
+<div id="recoResult"></div>
+<div id="result"></div>
+<div class="card"><h2>관심종목 (이 기기에 저장)</h2><div id="wl"></div><div id="wlempty" class="mut"></div></div>
+<div class="mut" style="margin-top:14px;font-size:11px">업비트 공개 데이터로 폰에서 직접 분석·계산합니다. 검증된 코어(일봉 추세+모델) 기준. 투자 판단 보조용이며 수익을 보장하지 않습니다.</div>
+
+<script>
+const UP='https://api.upbit.com/v1';
+const $=id=>document.getElementById(id);
+const mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
+function sma(a,p){if(a.length<p)return null;return mean(a.slice(-p));}
+function ema(a,p){if(!a.length)return null;let al=2/(p+1),e=a[0];for(let i=1;i<a.length;i++)e=a[i]*al+e*(1-al);return a.length>=p?e:null;}
+function rsi(a,p=14){if(a.length<=p)return null;let ch=[];for(let i=1;i<a.length;i++)ch.push(a[i]-a[i-1]);
+ let ag=0,al=0;for(let i=0;i<p;i++){ag+=Math.max(ch[i],0);al+=Math.max(-ch[i],0);}ag/=p;al/=p;
+ for(let i=p;i<ch.length;i++){ag=(ag*(p-1)+Math.max(ch[i],0))/p;al=(al*(p-1)+Math.max(-ch[i],0))/p;}
+ if(al===0)return 100;return 100-100/(1+ag/al);}
+function boll(a,p=20,d=2){if(a.length<p)return[null,null];let w=a.slice(-p),m=mean(w),v=Math.sqrt(mean(w.map(x=>(x-m)**2)))*d;return[m+v,m-v];}
+function atr(c,p=14){if(c.length<=p)return null;let tr=[];for(let i=c.length-p;i<c.length;i++){let pr=c[i-1];tr.push(Math.max(c[i].h-c[i].l,Math.abs(c[i].h-pr.c),Math.abs(c[i].l-pr.c)));}return mean(tr);}
+function ratio(a,p=20){if(a.length<p+1)return null;let b=mean(a.slice(-p-1,-1));if(b<=0)return null;return a[a.length-1]/b;}
+function aggregate(w,f){if(f<=1||w.length<f)return w.slice();let o=[];for(let s=0;s+f<=w.length;s+=f){let ch=w.slice(s,s+f);o.push({o:ch[0].o,h:Math.max(...ch.map(x=>x.h)),l:Math.min(...ch.map(x=>x.l)),c:ch[ch.length-1].c,v:ch.reduce((a,b)=>a+b.v,0)});}return o;}
+function htf(w,f=24){let g=aggregate(w,f),cl=g.map(x=>x.c),fa=ema(cl,10),sl=ema(cl,30);if(fa==null||sl==null)return 0;return fa>sl?1:(fa<sl?-1:0);}
+const MINB=70;
+function feats(w){if(w.length<MINB)return null;let cl=w.map(x=>x.c),hi=w.map(x=>x.h),lo=w.map(x=>x.l),vo=w.map(x=>x.v),c=cl[cl.length-1];if(c<=0)return null;
+ let r=rsi(cl),[u,l]=boll(cl),ef=ema(cl,12),es=ema(cl,26),sf=sma(cl,20),ss=sma(cl,60),a=atr(w),vr=ratio(vo);
+ if([r,u,l,ef,es,sf,ss,a,vr].some(x=>x==null)||u<=l)return null;
+ return [(r-50)/50,a/c,sf/ss-1,ef/es-1,(c-l)/(u-l)-0.5,c/Math.max(...hi.slice(-20))-1,c/Math.min(...lo.slice(-20))-1,vr-1,c/cl[cl.length-5]-1,htf(w)];}
+function sig(z){return z>=0?1/(1+Math.exp(-Math.min(z,60))):Math.exp(Math.max(z,-60))/(1+Math.exp(Math.max(z,-60)));}
+function fit(X,y,ep=200,lr=0.3,l2=1e-3){let n=X.length,d=X[0].length,m=[],sd=[];
+ for(let j=0;j<d;j++){let col=X.map(r=>r[j]);m[j]=mean(col);sd[j]=Math.sqrt(mean(col.map(x=>(x-m[j])**2)))||1;}
+ let Z=X.map(r=>r.map((v,j)=>(v-m[j])/sd[j])),w=Array(d).fill(0),b=0;
+ for(let e=0;e<ep;e++){let gw=Array(d).fill(0),gb=0;for(let i=0;i<n;i++){let zz=b;for(let j=0;j<d;j++)zz+=w[j]*Z[i][j];let er=sig(zz)-y[i];for(let j=0;j<d;j++)gw[j]+=er*Z[i][j];gb+=er;}
+  for(let j=0;j<d;j++)w[j]-=lr*(gw[j]/n+l2*w[j]);b-=lr*gb/n;}
+ return {w,b,m,sd};}
+function predict(mo,x){let z=mo.b;for(let j=0;j<x.length;j++)z+=mo.w[j]*((x[j]-mo.m[j])/mo.sd[j]);return sig(z);}
+async function fetchDaily(market,total=400){let out=[],to='',seen=new Set();
+ while(out.length<total){let url=UP+'/candles/days?market='+market+'&count=200'+(to?'&to='+encodeURIComponent(to):'');
+  let raw=null;
+  for(let att=0;att<5;att++){               // 429(요청 한도) 재시도·백오프
+   try{let res=await fetch(url);if(res.status===429){await new Promise(r=>setTimeout(r,700*(att+1)));continue;}if(!res.ok)break;raw=await res.json();break;}
+   catch(e){await new Promise(r=>setTimeout(r,600*(att+1)));}}
+  if(!raw||!raw.length||raw.error)break;let add=0;
+  for(let it of raw){let k=it.candle_date_time_utc;if(seen.has(k))continue;seen.add(k);out.push({t:k,o:+it.opening_price,h:+it.high_price,l:+it.low_price,c:+it.trade_price,v:+it.candle_acc_trade_volume});add++;}
+  to=raw[raw.length-1].candle_date_time_utc;if(raw.length<200||!add)break;await new Promise(r=>setTimeout(r,250));}
+ out.sort((a,b)=>a.t<b.t?-1:1);
+ // 업비트 일봉 응답의 마지막 항목은 진행 중인 UTC 당일 봉일 수 있다.
+ const today=new Date().toISOString().slice(0,10);
+ return out.filter(x=>x.t.slice(0,10)!==today);}
+async function ticker(markets){let r=await(await fetch(UP+'/ticker?markets='+markets.join(','))).json();let o={};for(let x of r)o[x.market]=x.trade_price;return o;}
+async function fng(){try{let r=await(await fetch('https://api.alternative.me/fng/?limit=1')).json();let d=r.data[0];return d.value+' ('+d.value_classification+')';}catch(e){return null;}}
+function fp(v){if(v>=100)return Math.round(v).toLocaleString('ko-KR')+'원';if(v>=1)return v.toFixed(2)+'원';if(v>=0.01)return v.toFixed(4)+'원';return v.toFixed(8)+'원';}
+function norm(s){s=s.trim().toUpperCase();return s.startsWith('KRW-')?s:'KRW-'+s;}
+
+async function analyze(input){
+ const market=norm(input);$('result').innerHTML='<div class="card mut">분석 중… 데이터 수신·모델 학습(몇 초)</div>';
+ let cs;try{cs=await getDaily(market,400);}catch(e){cs=[];}
+ if(cs.length<200){$('result').innerHTML='<div class="card neg">데이터 수신 실패 — 업비트 요청 한도이거나 네트워크 문제일 수 있어요. 잠시 후 다시 시도하거나 코인명을 확인하세요. ('+market+', '+cs.length+'일)</div>';return null;}
+ let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}
+ if(X.length<150){$('result').innerHTML='<div class="card neg">학습 데이터 부족</div>';return null;}
+ let mo=fit(X,y),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),r=rsi(cl),a=atr(cs),ap=a/c,p=predict(mo,x);
+ let regime=s50&&c>s50,gap=(c/s50-1)*100,stop=ap*2,risk=c-c*(1-stop),t1=c+risk*1.5,t2=c+risk*3,buy=regime&&p>=0.55;
+ let fg=await fng();
+ let plan;
+ if(buy)plan='<div class="plan">🟢 매수: '+fp(c)+' 부근 (눌림 -'+(ap*50).toFixed(1)+'%마다 분할 가능)</div>'+
+   '<div class="plan">🔴 손절: '+fp(c*(1-stop))+' (-'+(stop*100).toFixed(1)+'%)</div>'+
+   '<div class="plan">🎯 목표: 1차 '+fp(t1)+' · 2차 '+fp(t2)+'</div>';
+ else if(!regime)plan='<div class="plan">⏳ 매수 전환선: 종가가 50일선 '+fp(s50)+' 회복 시 (현재 '+gap.toFixed(1)+'%)</div>';
+ else plan='<div class="plan">⏳ 대기: 모델 P(up) '+(p*100).toFixed(0)+'% → 55%↑ 시 매수 후보</div>';
+ $('result').innerHTML='<div class="card" style="border-color:'+(buy?'var(--up)':'var(--warn)')+'">'+
+  '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><b style="font-size:16px">'+market+'</b>'+
+  '<span class="badge '+(buy?'b-buy':'b-hold')+'">'+(buy?'매수 후보':'매수 보류')+'</span>'+
+  '<span class="mut" style="margin-left:auto">'+fp(c)+'</span></div>'+
+  '<div class="line">'+(regime?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 추세: 50일선 대비 '+gap.toFixed(1)+'%</div>'+
+  '<div class="line">'+(p>=0.55?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 모델 P(up) '+(p*100).toFixed(0)+'%</div>'+
+  '<div class="line dim">RSI '+r.toFixed(0)+' · 변동성(ATR) '+(ap*100).toFixed(1)+'%'+(fg?' · 공포탐욕 '+fg:'')+'</div>'+
+  '<div style="margin-top:8px">'+plan+'</div>'+
+  '<button id="watch" style="width:100%;margin-top:8px;background:var(--card2);color:var(--txt);border:1px solid var(--line)">+ 관심종목 추가</button></div>';
+ $('watch').onclick=()=>{addWatch(market);};
+ return {market,c,p,buy};
+}
+
+// 관심종목 (localStorage)
+function getWL(){try{return JSON.parse(localStorage.getItem('wl')||'[]');}catch(e){return [];}}
+function setWL(a){localStorage.setItem('wl',JSON.stringify(a));}
+function addWatch(m){let w=getWL();if(!w.includes(m)){w.push(m);setWL(w);renderWL();}}
+function delWatch(m){setWL(getWL().filter(x=>x!==m));renderWL();}
+let wlState={};
+async function renderWL(){let w=getWL();$('wlempty').textContent=w.length?'':'분석 후 "관심종목 추가"를 누르세요';
+ $('wl').innerHTML=w.map(m=>{let st=wlState[m]||{};let chg=st.chg;
+  return '<div class="wl"><b>'+m.replace('KRW-','')+'</b>'+
+   '<span class="num">'+(st.price!=null?fp(st.price):'…')+'</span>'+
+   '<span class="num '+(chg>=0?'pos':'neg')+'">'+(chg!=null?(chg>=0?'+':'')+chg.toFixed(2)+'%':'')+'</span>'+
+   '<span class="x" onclick="delWatch(\''+m+'\')">✕</span></div>';}).join('');}
+async function pollWL(){let w=getWL();if(!w.length){renderWL();return;}
+ try{let pr=await ticker(w);for(let m of w){let st=wlState[m]||(wlState[m]={});if(st.base==null&&pr[m])st.base=pr[m];if(pr[m]){st.price=pr[m];st.chg=st.base?(pr[m]/st.base-1)*100:0;}}}catch(e){}
+ renderWL();}
+
+// 추천 스크리너 (상위 코인 자동 스캔)
+const STABLE=new Set(['USDT','USDC','DAI','TUSD','BUSD','USDP','FDUSD','USDD']);
+const CC={};
+async function getDaily(m,n=400){if(CC[m]&&CC[m].length>=n)return CC[m];let c=await fetchDaily(m,n);if(c.length)CC[m]=c;return c;}
+const MAJORS=['KRW-BTC','KRW-ETH','KRW-XRP','KRW-SOL','KRW-ADA','KRW-DOGE','KRW-AVAX','KRW-LINK','KRW-SUI','KRW-TRX','KRW-XLM','KRW-NEAR'];
+async function topMarkets(n=12){return MAJORS.slice(0,n);}  // 한도 부담 줄이려 주요 코인 고정
+function score(cs){if(cs.length<200)return null;let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}if(X.length<150)return null;let mo=fit(X,y,150),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),p=predict(mo,x);return {c,p,gap:(c/s50-1)*100};}
+async function recommend(){
+ const R=$('recoResult');R.innerHTML='<div class="card mut" id="recoMsg">상위 코인 스캔 준비 중…</div>';
+ let mkts;try{mkts=await topMarkets(12);}catch(e){R.innerHTML='<div class="card neg">스캔 실패 (네트워크)</div>';return;}
+ let cands=[],watch=[],i=0;
+ for(let m of mkts){i++;let el=$('recoMsg');if(el)el.textContent='스캔 중… '+i+'/'+mkts.length+'  '+m.replace('KRW-','');
+  let cs;try{cs=await getDaily(m,400);}catch(e){continue;}
+  let cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50);
+  if(!s50||c<=s50)continue;            // 하락추세 → 모델 생략(빠름)
+  let sc=score(cs);if(!sc)continue;
+  (sc.p>=0.55?cands:watch).push({m,c:sc.c,p:sc.p,gap:sc.gap});}
+ cands.sort((a,b)=>b.p-a.p);watch.sort((a,b)=>b.p-a.p);
+ let h='<div class="card"><h2>🟢 매수후보 추천 ('+cands.length+')</h2>';
+ h+=cands.length?cands.map(x=>recoRow(x,true)).join(''):'<div class="mut">지금 매수 조건(상승추세 + 모델 P≥55%) 통과 코인 없음 — 하락 국면입니다. 현금 보유가 정답일 수 있어요.</div>';
+ if(watch.length)h+='<h2 style="margin-top:14px">상승추세 관찰 (P&lt;55%)</h2>'+watch.slice(0,6).map(x=>recoRow(x,false)).join('');
+ h+='<div class="mut" style="margin-top:8px;font-size:11px">탭하면 상세 분석 + 매매계획</div></div>';
+ R.innerHTML=h;}
+function recoRow(x,buy){return '<div class="wl" onclick="pick(\''+x.m+'\')"><b>'+x.m.replace('KRW-','')+'</b>'+
+ '<span class="num">'+fp(x.c)+'</span>'+
+ '<span class="num '+(x.gap>=0?'pos':'neg')+'">추세'+(x.gap>=0?'+':'')+x.gap.toFixed(0)+'%</span>'+
+ '<span class="num" style="margin-left:auto;font-weight:700;color:'+(buy?'var(--up)':'var(--mut)')+'">P '+(x.p*100).toFixed(0)+'%</span></div>';}
+function pick(m){$('q').value=m.replace('KRW-','');analyze(m);window.scrollTo(0,document.getElementById('result').offsetTop-10);}
+window.pick=pick;
+$('reco').onclick=recommend;
+$('go').onclick=()=>{if($('q').value.trim())analyze($('q').value);};
+$('q').addEventListener('keydown',e=>{if(e.key==='Enter'&&$('q').value.trim())analyze($('q').value);});
+renderWL();pollWL();setInterval(pollWL,4000);
+window.delWatch=delWatch;
+if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+</script></body></html>
