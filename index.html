@@ -23,7 +23,7 @@ button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:1
 .num{font-variant-numeric:tabular-nums}
 .line{padding:4px 0;font-size:14px}
 .plan{background:var(--card2);border-radius:10px;padding:6px 11px;margin:5px 0;font-size:14px}
-.wl{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line)}
+.wl{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer}
 .wl:last-child{border:0} .wl b{flex:0 0 88px} .x{margin-left:auto;color:var(--dim);padding:4px 8px}
 h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 </style></head><body>
@@ -36,7 +36,7 @@ h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;
 <button id="reco" style="width:100%;margin-top:8px;background:var(--card2);color:var(--accent);border:1px solid var(--accent)">🔍 지금 매수후보 추천 (상위 코인 자동 스캔)</button>
 <div id="recoResult"></div>
 <div id="result"></div>
-<div class="card"><h2>관심종목 (이 기기에 저장)</h2><div id="wl"></div><div id="wlempty" class="mut"></div></div>
+<div class="card"><h2>관심종목 (탭하면 분석)</h2><div id="wl"></div><div id="wlempty" class="mut"></div></div>
 <div class="mut" style="margin-top:14px;font-size:11px">업비트 공개 데이터로 폰에서 직접 분석·계산합니다. 검증된 코어(일봉 추세+모델) 기준. 투자 판단 보조용이며 수익을 보장하지 않습니다.</div>
 
 <script>
@@ -174,10 +174,10 @@ function delWatch(m){setWL(getWL().filter(x=>x!==m));renderWL();}
 let wlState={};
 async function renderWL(){let w=getWL();$('wlempty').textContent=w.length?'':'분석 후 "관심종목 추가"를 누르세요';
  $('wl').innerHTML=w.map(m=>{let st=wlState[m]||{};let chg=st.chg;
-  return '<div class="wl"><b>'+m.replace('KRW-','')+'</b>'+
+  return '<div class="wl" onclick="pick(\''+m+'\')" title="분석하기"><b>'+m.replace('KRW-','')+'</b>'+
    '<span class="num">'+(st.price!=null?fp(st.price):'…')+'</span>'+
    '<span class="num '+(chg>=0?'pos':'neg')+'">'+(chg!=null?(chg>=0?'+':'')+chg.toFixed(2)+'%':'')+'</span>'+
-   '<span class="x" onclick="delWatch(\''+m+'\')">✕</span></div>';}).join('');}
+   '<span class="x" onclick="event.stopPropagation();delWatch(\''+m+'\')" title="삭제">✕</span></div>';}).join('');}
 async function pollWL(){let w=getWL();if(!w.length){renderWL();return;}
  try{let pr=await ticker(w);for(let m of w){let st=wlState[m]||(wlState[m]={});if(st.base==null&&pr[m])st.base=pr[m];if(pr[m]){st.price=pr[m];st.chg=st.base?(pr[m]/st.base-1)*100:0;}}}catch(e){}
  renderWL();}

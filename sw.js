@@ -1,4 +1,4 @@
-const CACHE = 'coinharness-mobile-v5';
+const CACHE = 'coinharness-mobile-v6';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon.png', './icon.svg'];
 
 self.addEventListener('install', event => {
