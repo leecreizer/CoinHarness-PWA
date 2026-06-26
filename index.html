@@ -27,7 +27,8 @@ button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:1
 .wl:last-child{border:0} .wl b{flex:0 0 88px} .x{margin-left:auto;color:var(--dim);padding:4px 8px}
 h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 </style></head><body>
-<h1><span class="dot"></span>CoinHarness <span class="mut" style="font-weight:400">Mobile · 폰 자체구동</span></h1>
+<h1><span class="dot" id="dot"></span>CoinHarness <span class="mut" style="font-weight:400">Mobile · 폰 자체구동</span></h1>
+<div id="offline" style="display:none;background:rgba(239,83,80,.16);color:var(--down);border:1px solid var(--down);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:13px">⚠ 오프라인 — 네트워크 연결을 확인하세요</div>
 <div class="row">
   <input id="q" placeholder="코인 입력 (예: BTC, SOL, WLD)" autocapitalize="characters" autocomplete="off">
   <button id="go">분석</button>
@@ -40,6 +41,31 @@ h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;
 
 <script>
 const UP='https://api.upbit.com/v1';
+// 자체구동 불변식: 폰은 아래 공개 출처만 호출한다. 개인/사설망 서버 호출은 코드 레벨에서 차단.
+const ALLOW=['https://api.upbit.com','https://api.alternative.me'];
+function allowedOrigin(u){try{return ALLOW.includes(new URL(u,location.href).origin);}catch(e){return false;}}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const UPBIT_MIN_GAP=1200; // 업비트 공개 API 429 방지: 폰 내부 요청도 1.2초 이상 간격 유지
+let upbitReadyAt=0;
+class ApiError extends Error{constructor(code,msg,status=0){super(msg);this.code=code;this.status=status;}}
+async function waitUpbitSlot(){let now=Date.now();if(now<upbitReadyAt)await sleep(upbitReadyAt-now);upbitReadyAt=Date.now()+UPBIT_MIN_GAP;}
+async function safeFetch(url,opts){
+ const u=new URL(url,location.href);
+ if(!allowedOrigin(url))throw new ApiError('blocked-origin','blocked-origin:'+url);
+ if(navigator.onLine===false)throw new Error('offline');
+ if(u.origin==='https://api.upbit.com')await waitUpbitSlot();
+ return globalThis['fetch'](url,opts);
+}
+async function fetchJson(url,label='요청',tries=7){let last=null;
+ for(let att=0;att<tries;att++){
+  try{let res=await safeFetch(url);
+   if(res.status===429){let ra=Number(res.headers&&res.headers.get&&res.headers.get('Retry-After'))||0;let wait=Math.max(2500*(att+1),ra*1000);upbitReadyAt=Date.now()+wait;last=new ApiError('rate-limit','업비트 요청 한도에 걸렸습니다.',429);await sleep(wait);continue;}
+   let body=null;try{body=await res.json();}catch(e){}
+   if(!res.ok||body&&body.error){let msg=(body&&body.error&&(body.error.message||body.error.name))||label+' 실패';throw new ApiError('http',msg,res.status);}
+   return body;
+  }catch(e){last=e;if(e&&['blocked-origin','http'].includes(e.code))throw e;if(e&&e.code==='rate-limit'&&att===tries-1)throw e;await sleep(900*(att+1));}}
+ throw last||new ApiError('network',label+' 실패');}
+const tick=()=>new Promise(r=>setTimeout(r,0)); // 무거운 계산 사이 UI에 제어권 양보(프리즈 방지)
 const $=id=>document.getElementById(id);
 const mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
 function sma(a,p){if(a.length<p)return null;return mean(a.slice(-p));}
@@ -68,26 +94,31 @@ function fit(X,y,ep=200,lr=0.3,l2=1e-3){let n=X.length,d=X[0].length,m=[],sd=[];
 function predict(mo,x){let z=mo.b;for(let j=0;j<x.length;j++)z+=mo.w[j]*((x[j]-mo.m[j])/mo.sd[j]);return sig(z);}
 async function fetchDaily(market,total=400){let out=[],to='',seen=new Set();
  while(out.length<total){let url=UP+'/candles/days?market='+market+'&count=200'+(to?'&to='+encodeURIComponent(to):'');
-  let raw=null;
-  for(let att=0;att<5;att++){               // 429(요청 한도) 재시도·백오프
-   try{let res=await fetch(url);if(res.status===429){await new Promise(r=>setTimeout(r,700*(att+1)));continue;}if(!res.ok)break;raw=await res.json();break;}
-   catch(e){await new Promise(r=>setTimeout(r,600*(att+1)));}}
+  let raw=await fetchJson(url,market+' 일봉',7); // 429(요청 한도) 긴 백오프
   if(!raw||!raw.length||raw.error)break;let add=0;
   for(let it of raw){let k=it.candle_date_time_utc;if(seen.has(k))continue;seen.add(k);out.push({t:k,o:+it.opening_price,h:+it.high_price,l:+it.low_price,c:+it.trade_price,v:+it.candle_acc_trade_volume});add++;}
-  to=raw[raw.length-1].candle_date_time_utc;if(raw.length<200||!add)break;await new Promise(r=>setTimeout(r,250));}
+  to=raw[raw.length-1].candle_date_time_utc;if(raw.length<200||!add)break;await sleep(500);}
  out.sort((a,b)=>a.t<b.t?-1:1);
  // 업비트 일봉 응답의 마지막 항목은 진행 중인 UTC 당일 봉일 수 있다.
  const today=new Date().toISOString().slice(0,10);
  return out.filter(x=>x.t.slice(0,10)!==today);}
-async function ticker(markets){let r=await(await fetch(UP+'/ticker?markets='+markets.join(','))).json();let o={};for(let x of r)o[x.market]=x.trade_price;return o;}
-async function fng(){try{let r=await(await fetch('https://api.alternative.me/fng/?limit=1')).json();let d=r.data[0];return d.value+' ('+d.value_classification+')';}catch(e){return null;}}
+async function ticker(markets){let r=await fetchJson(UP+'/ticker?markets='+markets.join(','),'현재가',4);let o={};for(let x of r)o[x.market]=x.trade_price;return o;}
+async function fng(){try{let r=await fetchJson('https://api.alternative.me/fng/?limit=1','공포탐욕',2);let d=r.data[0];return d.value+' ('+d.value_classification+')';}catch(e){return null;}}
 function fp(v){if(v>=100)return Math.round(v).toLocaleString('ko-KR')+'원';if(v>=1)return v.toFixed(2)+'원';if(v>=0.01)return v.toFixed(4)+'원';return v.toFixed(8)+'원';}
 function norm(s){s=s.trim().toUpperCase();return s.startsWith('KRW-')?s:'KRW-'+s;}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function dataFail(market,e,days=0){let msg='데이터 수신 실패 — 잠시 후 다시 시도하거나 코인명을 확인하세요.';
+ if(e&&e.code==='rate-limit')msg='업비트 요청 한도에 걸렸습니다 — 30~60초 뒤 다시 시도하세요.';
+ else if(e&&e.message==='offline')msg='오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.';
+ else if(e&&e.code==='http')msg='업비트가 해당 마켓 데이터를 거절했습니다 — 코인명을 확인하세요.';
+ return '<div class="card neg">'+esc(msg)+' ('+esc(market)+', '+days+'일)</div>';}
 
 async function analyze(input){
+ if(navigator.onLine===false){$('result').innerHTML='<div class="card neg">오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.</div>';return null;}
  const market=norm(input);$('result').innerHTML='<div class="card mut">분석 중… 데이터 수신·모델 학습(몇 초)</div>';
- let cs;try{cs=await getDaily(market,400);}catch(e){cs=[];}
- if(cs.length<200){$('result').innerHTML='<div class="card neg">데이터 수신 실패 — 업비트 요청 한도이거나 네트워크 문제일 수 있어요. 잠시 후 다시 시도하거나 코인명을 확인하세요. ('+market+', '+cs.length+'일)</div>';return null;}
+ await tick();
+ let cs;try{cs=await getDaily(market,400);}catch(e){$('result').innerHTML=dataFail(market,e,0);return null;}
+ if(cs.length<200){$('result').innerHTML='<div class="card neg">학습 데이터 부족 — 최소 200일 이상 확정 일봉이 필요합니다. ('+esc(market)+', '+cs.length+'일)</div>';return null;}
  let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}
  if(X.length<150){$('result').innerHTML='<div class="card neg">학습 데이터 부족</div>';return null;}
  let mo=fit(X,y),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),r=rsi(cl),a=atr(cs),ap=a/c,p=predict(mo,x);
@@ -136,13 +167,16 @@ const MAJORS=['KRW-BTC','KRW-ETH','KRW-XRP','KRW-SOL','KRW-ADA','KRW-DOGE','KRW-
 async function topMarkets(n=12){return MAJORS.slice(0,n);}  // 한도 부담 줄이려 주요 코인 고정
 function score(cs){if(cs.length<200)return null;let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}if(X.length<150)return null;let mo=fit(X,y,150),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),p=predict(mo,x);return {c,p,gap:(c/s50-1)*100};}
 async function recommend(){
- const R=$('recoResult');R.innerHTML='<div class="card mut" id="recoMsg">상위 코인 스캔 준비 중…</div>';
+ const R=$('recoResult');
+ if(navigator.onLine===false){R.innerHTML='<div class="card neg">오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.</div>';return;}
+ R.innerHTML='<div class="card mut" id="recoMsg">상위 코인 스캔 준비 중…</div>';
  let mkts;try{mkts=await topMarkets(12);}catch(e){R.innerHTML='<div class="card neg">스캔 실패 (네트워크)</div>';return;}
  let cands=[],watch=[],i=0;
  for(let m of mkts){i++;let el=$('recoMsg');if(el)el.textContent='스캔 중… '+i+'/'+mkts.length+'  '+m.replace('KRW-','');
   let cs;try{cs=await getDaily(m,400);}catch(e){continue;}
   let cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50);
   if(!s50||c<=s50)continue;            // 하락추세 → 모델 생략(빠름)
+  await tick();                        // 학습(블로킹) 직전 UI 양보 → 폰에서 화면 안 멈춤
   let sc=score(cs);if(!sc)continue;
   (sc.p>=0.55?cands:watch).push({m,c:sc.c,p:sc.p,gap:sc.gap});}
  cands.sort((a,b)=>b.p-a.p);watch.sort((a,b)=>b.p-a.p);
@@ -160,7 +194,9 @@ window.pick=pick;
 $('reco').onclick=recommend;
 $('go').onclick=()=>{if($('q').value.trim())analyze($('q').value);};
 $('q').addEventListener('keydown',e=>{if(e.key==='Enter'&&$('q').value.trim())analyze($('q').value);});
-renderWL();pollWL();setInterval(pollWL,4000);
+function setOnline(){let off=navigator.onLine===false,b=$('offline'),d=$('dot');if(b)b.style.display=off?'block':'none';if(d)d.style.background=off?'var(--down)':'var(--up)';}
+addEventListener('online',setOnline);addEventListener('offline',setOnline);setOnline();
+renderWL();pollWL();setInterval(pollWL,10000);
 window.delWatch=delWatch;
 if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 </script></body></html>
