@@ -41,6 +41,7 @@ h2{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;
 
 <script>
 const UP='https://api.upbit.com/v1';
+const WS_UP='wss://api.upbit.com/websocket/v1';
 // 자체구동 불변식: 폰은 아래 공개 출처만 호출한다. 개인/사설망 서버 호출은 코드 레벨에서 차단.
 const ALLOW=['https://api.upbit.com','https://api.alternative.me'];
 function allowedOrigin(u){try{return ALLOW.includes(new URL(u,location.href).origin);}catch(e){return false;}}
@@ -107,14 +108,31 @@ async function fng(){try{let r=await fetchJson('https://api.alternative.me/fng/?
 function fp(v){if(v>=100)return Math.round(v).toLocaleString('ko-KR')+'원';if(v>=1)return v.toFixed(2)+'원';if(v>=0.01)return v.toFixed(4)+'원';return v.toFixed(8)+'원';}
 function norm(s){s=s.trim().toUpperCase();return s.startsWith('KRW-')?s:'KRW-'+s;}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function text(id,v){let el=$(id);if(el)el.textContent=v;}
+function html(id,v){let el=$(id);if(el)el.innerHTML=v;}
 function dataFail(market,e,days=0){let msg='데이터 수신 실패 — 잠시 후 다시 시도하거나 코인명을 확인하세요.';
  if(e&&e.code==='rate-limit')msg='업비트 요청 한도에 걸렸습니다 — 30~60초 뒤 다시 시도하세요.';
  else if(e&&e.message==='offline')msg='오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.';
  else if(e&&e.code==='http')msg='업비트가 해당 마켓 데이터를 거절했습니다 — 코인명을 확인하세요.';
  return '<div class="card neg">'+esc(msg)+' ('+esc(market)+', '+days+'일)</div>';}
 
+let liveWs=null,livePoll=0,liveState=null;
+function stopLivePrice(){liveState=null;if(liveWs){try{liveWs.onclose=null;liveWs.close();}catch(e){}liveWs=null;}if(livePoll){clearInterval(livePoll);livePoll=0;}}
+function liveMeta(src,ts){let t=ts?new Date(ts):new Date(),age=ts?Math.max(0,Math.round((Date.now()-ts)/1000)):0;return src+' · '+t.toLocaleTimeString('ko-KR',{hour12:false})+(ts?' · '+age+'초 전':'');}
+function applyLivePrice(market,price,ts,src){if(!liveState||liveState.market!==market||!price)return;let s=liveState,px=+price,lg=s.s50?(px/s.s50-1)*100:0;
+ text('topPrice','실시간 '+fp(px));text('livePrice',fp(px));text('liveMeta',liveMeta(src,ts));text('liveRef','신호기준 확정종가: '+fp(s.c)+' · 50일선: '+fp(s.s50)+' · 실시간/50일선 '+lg.toFixed(1)+'%');
+ if(s.buy){let risk=px*s.stop;text('planBuy',fp(px));text('planStop',fp(px*(1-s.stop)));text('planT1',fp(px+risk*1.5));text('planT2',fp(px+risk*3));}}
+function startRestLive(market){if(livePoll)return;livePoll=setInterval(async()=>{try{let p=(await ticker([market]))[market];applyLivePrice(market,p,Date.now(),'REST');}catch(e){}},5000);}
+function startLivePrice(market,state,initial){stopLivePrice();liveState={market,...state};if(initial)applyLivePrice(market,initial,Date.now(),'REST');
+ if(!('WebSocket' in window)){startRestLive(market);return;}
+ try{liveWs=new WebSocket(WS_UP);liveWs.binaryType='blob';liveWs.onopen=()=>liveWs.send(JSON.stringify([{ticket:'coinharness-mobile'},{type:'ticker',codes:[market],is_only_realtime:true}]));
+  liveWs.onmessage=async ev=>{try{let raw=typeof ev.data==='string'?ev.data:await ev.data.text();let m=JSON.parse(raw),p=Number(m.trade_price||m.tp),ts=Number(m.trade_timestamp||m.tms||m.timestamp||Date.now());applyLivePrice(market,p,ts,'WS');}catch(e){}};
+  liveWs.onerror=()=>startRestLive(market);liveWs.onclose=()=>startRestLive(market);
+ }catch(e){startRestLive(market);}}
+
 async function analyze(input){
  if(navigator.onLine===false){$('result').innerHTML='<div class="card neg">오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.</div>';return null;}
+ stopLivePrice();
  const market=norm(input);$('result').innerHTML='<div class="card mut">분석 중… 데이터 수신·모델 학습(몇 초)</div>';
  await tick();
  let cs;try{cs=await getDaily(market,400);}catch(e){$('result').innerHTML=dataFail(market,e,0);return null;}
@@ -127,23 +145,24 @@ async function analyze(input){
  let regime=s50&&c>s50,gap=(c/s50-1)*100,stop=ap*2,risk=px*stop,t1=px+risk*1.5,t2=px+risk*3,buy=regime&&p>=0.55;
  let fg=await fng();
  let plan;
- if(buy)plan='<div class="plan">🟢 매수: '+fp(px)+' 부근 (실시간 현재가 기준 · 눌림 -'+(ap*50).toFixed(1)+'%마다 분할 가능)</div>'+
-   '<div class="plan">🔴 손절: '+fp(px*(1-stop))+' (-'+(stop*100).toFixed(1)+'%)</div>'+
-   '<div class="plan">🎯 목표: 1차 '+fp(t1)+' · 2차 '+fp(t2)+'</div>';
+ if(buy)plan='<div class="plan">🟢 매수: <span id="planBuy">'+fp(px)+'</span> 부근 (실시간 현재가 기준 · 눌림 -'+(ap*50).toFixed(1)+'%마다 분할 가능)</div>'+
+   '<div class="plan">🔴 손절: <span id="planStop">'+fp(px*(1-stop))+'</span> (-'+(stop*100).toFixed(1)+'%)</div>'+
+   '<div class="plan">🎯 목표: 1차 <span id="planT1">'+fp(t1)+'</span> · 2차 <span id="planT2">'+fp(t2)+'</span></div>';
  else if(!regime)plan='<div class="plan">⏳ 매수 전환선: 종가가 50일선 '+fp(s50)+' 회복 시 (현재 '+gap.toFixed(1)+'%)</div>';
  else plan='<div class="plan">⏳ 대기: 모델 P(up) '+(p*100).toFixed(0)+'% → 55%↑ 시 매수 후보</div>';
  $('result').innerHTML='<div class="card" style="border-color:'+(buy?'var(--up)':'var(--warn)')+'">'+
   '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><b style="font-size:16px">'+market+'</b>'+
   '<span class="badge '+(buy?'b-buy':'b-hold')+'">'+(buy?'매수 후보':'매수 보류')+'</span>'+
-  '<span class="mut" style="margin-left:auto">'+(live?'현재가 ':'확정종가 ')+fp(px)+'</span></div>'+
-  '<div class="line"><span class="pos">●</span> 현재가: '+fp(px)+(live?'':' <span class="dim">(ticker 실패 → 확정종가 표시)</span>')+'</div>'+
-  '<div class="line dim">신호기준 확정종가: '+fp(c)+' · 50일선: '+fp(s50)+' · 현재가/50일선 '+liveGap.toFixed(1)+'%</div>'+
+  '<span class="mut" id="topPrice" style="margin-left:auto">'+(live?'실시간 ':'확정종가 ')+fp(px)+'</span></div>'+
+  '<div class="line"><span class="pos">●</span> 현재가: <span id="livePrice">'+fp(px)+'</span> <span class="dim" id="liveMeta">'+(live?'REST · 갱신 중':'ticker 실패 → 확정종가 표시')+'</span></div>'+
+  '<div class="line dim" id="liveRef">신호기준 확정종가: '+fp(c)+' · 50일선: '+fp(s50)+' · 실시간/50일선 '+liveGap.toFixed(1)+'%</div>'+
   '<div class="line">'+(regime?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 추세 신호: 확정종가 기준 50일선 대비 '+gap.toFixed(1)+'%</div>'+
   '<div class="line">'+(p>=0.55?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 모델 P(up) '+(p*100).toFixed(0)+'%</div>'+
   '<div class="line dim">RSI '+r.toFixed(0)+' · 변동성(ATR) '+(ap*100).toFixed(1)+'%'+(fg?' · 공포탐욕 '+fg:'')+'</div>'+
   '<div style="margin-top:8px">'+plan+'</div>'+
- '<button id="watch" style="width:100%;margin-top:8px;background:var(--card2);color:var(--txt);border:1px solid var(--line)">+ 관심종목 추가</button></div>';
+  '<button id="watch" style="width:100%;margin-top:8px;background:var(--card2);color:var(--txt);border:1px solid var(--line)">+ 관심종목 추가</button></div>';
  $('watch').onclick=()=>{addWatch(market);};
+ startLivePrice(market,{c,s50,stop,buy},live);
  return {market,c,live:live||null,p,buy};
 }
 
@@ -169,7 +188,7 @@ const CC={};
 async function getDaily(m,n=400){if(CC[m]&&CC[m].length>=n)return CC[m];let c=await fetchDaily(m,n);if(c.length)CC[m]=c;return c;}
 const MAJORS=['KRW-BTC','KRW-ETH','KRW-XRP','KRW-SOL','KRW-ADA','KRW-DOGE','KRW-AVAX','KRW-LINK','KRW-SUI','KRW-TRX','KRW-XLM','KRW-NEAR'];
 async function topMarkets(n=12){return MAJORS.slice(0,n);}  // 한도 부담 줄이려 주요 코인 고정
-function score(cs){if(cs.length<200)return null;let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}if(X.length<150)return null;let mo=fit(X,y,150),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),p=predict(mo,x);return {c,p,gap:(c/s50-1)*100};}
+function score(cs){if(cs.length<200)return null;let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}if(X.length<150)return null;let mo=fit(X,y,150),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),p=predict(mo,x);return {c,p,gap:(c/s50-1)*100,s50};}
 async function recommend(){
  const R=$('recoResult');
  if(navigator.onLine===false){R.innerHTML='<div class="card neg">오프라인 상태입니다 — 네트워크 연결 후 다시 시도하세요.</div>';return;}
@@ -182,16 +201,17 @@ async function recommend(){
   if(!s50||c<=s50)continue;            // 하락추세 → 모델 생략(빠름)
   await tick();                        // 학습(블로킹) 직전 UI 양보 → 폰에서 화면 안 멈춤
   let sc=score(cs);if(!sc)continue;
-  (sc.p>=0.55?cands:watch).push({m,c:sc.c,p:sc.p,gap:sc.gap});}
+  (sc.p>=0.55?cands:watch).push({m,c:sc.c,p:sc.p,gap:sc.gap,s50:sc.s50});}
  cands.sort((a,b)=>b.p-a.p);watch.sort((a,b)=>b.p-a.p);
+ let shown=[...cands,...watch.slice(0,6)];try{let pr=await ticker(shown.map(x=>x.m));for(let x of shown){if(pr[x.m])x.live=pr[x.m];}}catch(e){}
  let h='<div class="card"><h2>🟢 매수후보 추천 ('+cands.length+')</h2>';
  h+=cands.length?cands.map(x=>recoRow(x,true)).join(''):'<div class="mut">지금 매수 조건(상승추세 + 모델 P≥55%) 통과 코인 없음 — 하락 국면입니다. 현금 보유가 정답일 수 있어요.</div>';
  if(watch.length)h+='<h2 style="margin-top:14px">상승추세 관찰 (P&lt;55%)</h2>'+watch.slice(0,6).map(x=>recoRow(x,false)).join('');
  h+='<div class="mut" style="margin-top:8px;font-size:11px">탭하면 상세 분석 + 매매계획</div></div>';
  R.innerHTML=h;}
-function recoRow(x,buy){return '<div class="wl" onclick="pick(\''+x.m+'\')"><b>'+x.m.replace('KRW-','')+'</b>'+
- '<span class="num">'+fp(x.c)+'</span>'+
- '<span class="num '+(x.gap>=0?'pos':'neg')+'">추세'+(x.gap>=0?'+':'')+x.gap.toFixed(0)+'%</span>'+
+function recoRow(x,buy){let px=x.live||x.c,g=x.s50?(px/x.s50-1)*100:x.gap;return '<div class="wl" onclick="pick(\''+x.m+'\')"><b>'+x.m.replace('KRW-','')+'</b>'+
+ '<span class="num">'+fp(px)+'</span>'+
+ '<span class="num '+(g>=0?'pos':'neg')+'">실시간'+(g>=0?'+':'')+g.toFixed(0)+'%</span>'+
  '<span class="num" style="margin-left:auto;font-weight:700;color:'+(buy?'var(--up)':'var(--mut)')+'">P '+(x.p*100).toFixed(0)+'%</span></div>';}
 function pick(m){$('q').value=m.replace('KRW-','');analyze(m);window.scrollTo(0,document.getElementById('result').offsetTop-10);}
 window.pick=pick;
