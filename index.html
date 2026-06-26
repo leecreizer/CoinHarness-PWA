@@ -122,25 +122,29 @@ async function analyze(input){
  let X=[],y=[],H=5,fee=0.0005,slip=0.0005;for(let i=MINB;i<cs.length-H;i++){let x=feats(cs.slice(0,i+1));if(!x)continue;X.push(x);y.push(cs[i+H].c/cs[i].c-1>2*(fee+slip)?1:0);}
  if(X.length<150){$('result').innerHTML='<div class="card neg">학습 데이터 부족</div>';return null;}
  let mo=fit(X,y),x=feats(cs),cl=cs.map(c=>c.c),c=cl[cl.length-1],s50=sma(cl,50),r=rsi(cl),a=atr(cs),ap=a/c,p=predict(mo,x);
- let regime=s50&&c>s50,gap=(c/s50-1)*100,stop=ap*2,risk=c-c*(1-stop),t1=c+risk*1.5,t2=c+risk*3,buy=regime&&p>=0.55;
+ let live=null;try{let pr=await ticker([market]);live=pr[market]||null;}catch(e){}
+ let px=live||c,liveGap=s50?(px/s50-1)*100:0;
+ let regime=s50&&c>s50,gap=(c/s50-1)*100,stop=ap*2,risk=px*stop,t1=px+risk*1.5,t2=px+risk*3,buy=regime&&p>=0.55;
  let fg=await fng();
  let plan;
- if(buy)plan='<div class="plan">🟢 매수: '+fp(c)+' 부근 (눌림 -'+(ap*50).toFixed(1)+'%마다 분할 가능)</div>'+
-   '<div class="plan">🔴 손절: '+fp(c*(1-stop))+' (-'+(stop*100).toFixed(1)+'%)</div>'+
+ if(buy)plan='<div class="plan">🟢 매수: '+fp(px)+' 부근 (실시간 현재가 기준 · 눌림 -'+(ap*50).toFixed(1)+'%마다 분할 가능)</div>'+
+   '<div class="plan">🔴 손절: '+fp(px*(1-stop))+' (-'+(stop*100).toFixed(1)+'%)</div>'+
    '<div class="plan">🎯 목표: 1차 '+fp(t1)+' · 2차 '+fp(t2)+'</div>';
  else if(!regime)plan='<div class="plan">⏳ 매수 전환선: 종가가 50일선 '+fp(s50)+' 회복 시 (현재 '+gap.toFixed(1)+'%)</div>';
  else plan='<div class="plan">⏳ 대기: 모델 P(up) '+(p*100).toFixed(0)+'% → 55%↑ 시 매수 후보</div>';
  $('result').innerHTML='<div class="card" style="border-color:'+(buy?'var(--up)':'var(--warn)')+'">'+
   '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><b style="font-size:16px">'+market+'</b>'+
   '<span class="badge '+(buy?'b-buy':'b-hold')+'">'+(buy?'매수 후보':'매수 보류')+'</span>'+
-  '<span class="mut" style="margin-left:auto">'+fp(c)+'</span></div>'+
-  '<div class="line">'+(regime?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 추세: 50일선 대비 '+gap.toFixed(1)+'%</div>'+
+  '<span class="mut" style="margin-left:auto">'+(live?'현재가 ':'확정종가 ')+fp(px)+'</span></div>'+
+  '<div class="line"><span class="pos">●</span> 현재가: '+fp(px)+(live?'':' <span class="dim">(ticker 실패 → 확정종가 표시)</span>')+'</div>'+
+  '<div class="line dim">신호기준 확정종가: '+fp(c)+' · 50일선: '+fp(s50)+' · 현재가/50일선 '+liveGap.toFixed(1)+'%</div>'+
+  '<div class="line">'+(regime?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 추세 신호: 확정종가 기준 50일선 대비 '+gap.toFixed(1)+'%</div>'+
   '<div class="line">'+(p>=0.55?'<span class="pos">✓</span>':'<span class="neg">✗</span>')+' 모델 P(up) '+(p*100).toFixed(0)+'%</div>'+
   '<div class="line dim">RSI '+r.toFixed(0)+' · 변동성(ATR) '+(ap*100).toFixed(1)+'%'+(fg?' · 공포탐욕 '+fg:'')+'</div>'+
   '<div style="margin-top:8px">'+plan+'</div>'+
-  '<button id="watch" style="width:100%;margin-top:8px;background:var(--card2);color:var(--txt);border:1px solid var(--line)">+ 관심종목 추가</button></div>';
+ '<button id="watch" style="width:100%;margin-top:8px;background:var(--card2);color:var(--txt);border:1px solid var(--line)">+ 관심종목 추가</button></div>';
  $('watch').onclick=()=>{addWatch(market);};
- return {market,c,p,buy};
+ return {market,c,live:live||null,p,buy};
 }
 
 // 관심종목 (localStorage)
