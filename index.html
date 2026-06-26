@@ -119,11 +119,12 @@ function dataFail(market,e,days=0){let msg='데이터 수신 실패 — 잠시 �
 let liveWs=null,livePoll=0,liveState=null;
 function stopLivePrice(){liveState=null;if(liveWs){try{liveWs.onclose=null;liveWs.close();}catch(e){}liveWs=null;}if(livePoll){clearInterval(livePoll);livePoll=0;}}
 function liveMeta(src,ts){let t=ts?new Date(ts):new Date(),age=ts?Math.max(0,Math.round((Date.now()-ts)/1000)):0;return src+' · '+t.toLocaleTimeString('ko-KR',{hour12:false})+(ts?' · '+age+'초 전':'');}
-function applyLivePrice(market,price,ts,src){if(!liveState||liveState.market!==market||!price)return;let s=liveState,px=+price,lg=s.s50?(px/s.s50-1)*100:0;
+function applyLivePrice(market,price,ts,src){if(!liveState||liveState.market!==market||!price)return;let s=liveState;if(src==='WS')s.lastWs=Date.now();let px=+price,lg=s.s50?(px/s.s50-1)*100:0;
  text('topPrice','실시간 '+fp(px));text('livePrice',fp(px));text('liveMeta',liveMeta(src,ts));text('liveRef','신호기준 확정종가: '+fp(s.c)+' · 50일선: '+fp(s.s50)+' · 실시간/50일선 '+lg.toFixed(1)+'%');
  if(s.buy){let risk=px*s.stop;text('planBuy',fp(px));text('planStop',fp(px*(1-s.stop)));text('planT1',fp(px+risk*1.5));text('planT2',fp(px+risk*3));}}
-function startRestLive(market){if(livePoll)return;livePoll=setInterval(async()=>{try{let p=(await ticker([market]))[market];applyLivePrice(market,p,Date.now(),'REST');}catch(e){}},5000);}
+function startRestLive(market){if(livePoll)return;let poll=async()=>{try{if(liveState&&liveState.lastWs&&Date.now()-liveState.lastWs<6000)return;let p=(await ticker([market]))[market];applyLivePrice(market,p,Date.now(),'REST');}catch(e){}};poll();livePoll=setInterval(poll,3000);}
 function startLivePrice(market,state,initial){stopLivePrice();liveState={market,...state};if(initial)applyLivePrice(market,initial,Date.now(),'REST');
+ startRestLive(market); // iPhone/PWA 에서 WS 가 늦거나 막혀도 즉시 REST 현재가를 가져온다.
  if(!('WebSocket' in window)){startRestLive(market);return;}
  try{liveWs=new WebSocket(WS_UP);liveWs.binaryType='blob';liveWs.onopen=()=>liveWs.send(JSON.stringify([{ticket:'coinharness-mobile'},{type:'ticker',codes:[market],is_only_realtime:true}]));
   liveWs.onmessage=async ev=>{try{let raw=typeof ev.data==='string'?ev.data:await ev.data.text();let m=JSON.parse(raw),p=Number(m.trade_price||m.tp),ts=Number(m.trade_timestamp||m.tms||m.timestamp||Date.now());applyLivePrice(market,p,ts,'WS');}catch(e){}};
